@@ -368,8 +368,8 @@
             :or {session-id (uuid/next) revn 0}}]
    (-> system
        (assoc ::files.update/timestamp (ct/now))
-       (db/tx-run! (fn [{:keys [::db/conn] :as system}]
-                     (let [file (files.update/get-file conn file-id)]
+       (db/tx-run! (fn [system]
+                     (let [file (files.update/get-file system file-id)]
                        (#'files.update/update-file* system
                                                     {:id file-id
                                                      :revn revn

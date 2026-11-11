@@ -291,10 +291,11 @@
                                nil {:data (:data preview)}))]
       (t/is (= preview-data live)))))
 
-(t/deftest user-snapshot-of-file-needing-migration-is-materialized
-  ;; A file with pending migrations cannot share fragments: the
-  ;; migration path realizes the data, so the stored snapshot holds
-  ;; plain maps. This pins the shape so it cannot drift silently.
+(t/deftest user-snapshot-of-file-needing-migration-shares-fragments
+  ;; A file with pending migrations is migrated on read before the snapshot
+  ;; is taken. The read keeps the pointers of the pages the migration does
+  ;; not change, so the snapshot shares those fragments with the live file
+  ;; like any other snapshot instead of storing a materialized copy.
   (let [profile (th/create-profile* 1)
         file    (th/create-file* 1 {:profile-id (:id profile)
                                     :project-id (:default-project-id profile)
@@ -309,7 +310,11 @@
           snap-id (:id (:result out))
           snap    (fsnap/get-snapshot th/*system* file-id snap-id)]
       (t/is (uuid? snap-id))
-      (t/is (empty? (fdata/get-used-pointer-ids (:data snap))))
+      (let [snap-pointers (fdata/get-used-pointer-ids (:data snap))
+            live-pointers (fdata/get-used-pointer-ids
+                           (:data (bfc/get-file th/*system* file-id)))]
+        (t/is (seq snap-pointers))
+        (t/is (every? live-pointers snap-pointers)))
       ;; ...while preview keeps working on the migrated content.
       (let [preview (th/command! {::th/type :get-file-snapshot
                                   ::rpc/profile-id (:id profile)

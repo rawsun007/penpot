@@ -3082,17 +3082,18 @@
                  (:object-id thumb)))
         (t/is (some? (:media-id thumb)))))))
 
-(t/deftest get-file-without-data-rejects-locks
-  ;; Locking is incompatible with `load-data? false`: the guard fires
-  ;; before any query, so no DB row is needed. Regression test for the
-  ;; `lock-for-share?`/`lock-for-share?` typo that left `lock-for-update?`
-  ;; unchecked. NOTE: the guard is an unconditional `when`/`throw` in
-  ;; `get-file*` (not an `assert`), so this test is not flag-dependent:
-  ;; it behaves the same with or without `enable-backend-asserts`.
-  (doseq [opt [:lock-for-share? :lock-for-update? :skip-locked?]]
-    (t/is (thrown? IllegalArgumentException
-                   (bfc/get-file th/*system* (uuid/random)
-                                 :load-data? false opt true)))))
+(t/deftest get-file-without-data-can-lock
+  ;; Locking is legal without loading the data: the row-only query selects
+  ;; directly from `file`, so `FOR UPDATE`/`FOR SHARE` apply to the row and
+  ;; the lock lives until the enclosing transaction ends. `SKIP LOCKED` only
+  ;; modifies a locking read, so on its own it is ignored.
+  (let [profile (th/create-profile* 1)
+        file    (th/create-file* 1 {:profile-id (:id profile)
+                                    :project-id (:default-project-id profile)})]
+    (doseq [opt [:lock-for-share? :lock-for-update? :skip-locked?]]
+      (let [row (bfc/get-file th/*system* (:id file) :load-data? false opt true)]
+        (t/is (= (:id file) (:id row)))
+        (t/is (nil? (:data row)))))))
 
 ;; --- Library relations security tests
 
