@@ -108,6 +108,7 @@
    [frontend-tests.plugins.utils-test]
    [frontend-tests.plugins.value-objects-test]
    [frontend-tests.render-dimensions-test]
+   [frontend-tests.render-wasm.modifiers-test]
    [frontend-tests.render-wasm.process-objects-test]
    [frontend-tests.render-wasm.serialization-test]
    [frontend-tests.render-wasm.shape-proxy-test]
@@ -312,6 +313,7 @@
    'frontend-tests.plugins.user-test
    'frontend-tests.plugins.utils-test
    'frontend-tests.plugins.value-objects-test
+   'frontend-tests.render-wasm.modifiers-test
    'frontend-tests.render-wasm.process-objects-test
    'frontend-tests.render-wasm.serialization-test
    'frontend-tests.render-wasm.shape-proxy-test
