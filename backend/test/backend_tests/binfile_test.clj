@@ -801,6 +801,95 @@
         (t/is (cfo/token-applied? token-radius shape [:r1 :r2 :r3 :r4]))
         (t/is (cfo/token-applied? token-opacity shape [:opacity]))))))
 
+(t/deftest embed-assets-loads-the-library-components
+  ;; The library is read without `:realize?`, so its `:components` is an
+  ;; unloaded pointer map: `absorb-assets` walks it with `vals`, which calls
+  ;; `load!`, and that raises when no loader is bound. The absorb has to run
+  ;; under the library's own loader. This is a pre-existing failure, not a
+  ;; regression of the migration-on-read work: the migration path returns the
+  ;; pointer already loaded by the reattach comparison.
+  (let [profile      (th/create-profile* 1)
+        library      (th/create-file* 1 {:profile-id (:id profile)
+                                         :project-id (:default-project-id profile)
+                                         :is-shared true})
+        file         (th/create-file* 2 {:profile-id (:id profile)
+                                         :project-id (:default-project-id profile)})
+        lib-page     (first (get-in library [:data :pages]))
+        file-page    (first (get-in file [:data :pages]))
+        component-id (uuid/random)
+        main-id      (uuid/random)
+        copy-id      (uuid/random)]
+
+    (th/link-file-to-library* {:file-id (:id file) :library-id (:id library)})
+
+    ;; The library owns one component.
+    (update-file!
+     :file-id (:id library)
+     :profile-id (:id profile)
+     :changes
+     [{:type :add-obj
+       :page-id lib-page
+       :id main-id
+       :parent-id uuid/zero
+       :frame-id uuid/zero
+       :components-v2 true
+       :obj (cts/setup-shape
+             {:id main-id
+              :name "Board"
+              :frame-id uuid/zero
+              :parent-id uuid/zero
+              :type :frame
+              :main-instance true
+              :component-root true
+              :component-file (:id library)
+              :component-id component-id})}
+      {:type :add-component
+       :path ""
+       :name "Board"
+       :main-instance-id main-id
+       :main-instance-page lib-page
+       :id component-id
+       :anotation nil}])
+
+    ;; The file instances it, so the absorb has a usage to embed.
+    (update-file!
+     :file-id (:id file)
+     :profile-id (:id profile)
+     :changes
+     [{:type :add-obj
+       :page-id file-page
+       :id copy-id
+       :parent-id uuid/zero
+       :frame-id uuid/zero
+       :components-v2 true
+       :obj (cts/setup-shape
+             {:id copy-id
+              :name "Board"
+              :frame-id uuid/zero
+              :parent-id uuid/zero
+              :type :frame
+              :main-instance false
+              :component-root true
+              :component-file (:id library)
+              :component-id component-id})}])
+
+    (t/testing "a plain library is absorbed"
+      (let [file-data (-> (bfc/get-file th/*system* (:id file) :realize? true) :data)
+            result    (bfc/embed-assets th/*system* file-data (:id file))]
+        (t/is (contains? (:components result) component-id))))
+
+    (t/testing "a library that needed a migration is absorbed too"
+      ;; The scenario the review reported. It works even without the loader,
+      ;; because `reattach-unchanged` loads the pointers it puts back; it
+      ;; stays pinned so a future reattach that stops loading does not
+      ;; silently break the absorb.
+      (th/db-delete! :file-migration
+                     {:file-id (:id library)
+                      :name "0031-migrate-stroke-width-token-attr"})
+      (let [file-data (-> (bfc/get-file th/*system* (:id file) :realize? true) :data)
+            result    (bfc/embed-assets th/*system* file-data (:id file))]
+        (t/is (contains? (:components result) component-id))))))
+
 (t/deftest export-detach-libraries-preserves-own-tokens-and-status
   (let [profile (th/create-profile* 1)
         {:keys [library file page-id shape-id token-radius token-opacity]}
@@ -3110,6 +3199,21 @@
                    (bfc/get-file th/*system* id :realize? true :decode? false)))
     (t/is (thrown? IllegalArgumentException
                    (bfc/get-file th/*system* id :realize? true :load-data? false)))))
+
+(t/deftest get-file-rejects-a-shared-lock-with-data
+  ;; The probe inherits the caller's lock and the migration branch re-reads
+  ;; with FOR UPDATE, so a shared lock on a data read is a lock upgrade. The
+  ;; guard fires before any query, so no row is needed.
+  (t/is (thrown? IllegalArgumentException
+                 (bfc/get-file th/*system* (uuid/random) :lock-for-share? true))))
+
+(t/deftest get-file-rejects-a-bare-pool-or-connection
+  ;; The read opens its own transaction and resolves the cfg, so it takes a
+  ;; cfg map only: a bare pool or connection is a caller bug.
+  (let [id (uuid/random)]
+    (t/is (thrown? AssertionError (bfc/get-file th/*pool* id)))
+    (with-open [conn (db/open th/*system*)]
+      (t/is (thrown? AssertionError (bfc/get-file conn id))))))
 
 ;; --- Library relations security tests
 

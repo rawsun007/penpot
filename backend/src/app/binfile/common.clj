@@ -357,6 +357,7 @@
                 realize?
                 decode?
                 load-data?
+                lock-for-share?
                 read-only?]
          :as options}
         (merge default-get-file-options options)
@@ -366,6 +367,9 @@
 
     (when (and realize? (or (not load-data?) (not decode?)))
       (throw (IllegalArgumentException. "invalid options, you only can realize when loading data and decoding")))
+
+    (when (and lock-for-share? load-data?)
+      (throw (IllegalArgumentException. "invalid options, `:lock-for-share?` is only allowed on row-only reads")))
 
     (cond
       ;; The caller only wants the row: that read is the answer.
@@ -403,9 +407,28 @@
 (defn get-file
   "Get file, resolve all features and apply migrations.
 
+  Runs inside a transaction: it joins the caller's when the cfg already
+  carries a connection and opens one otherwise, so the migration write
+  commits with the read. Accepts a cfg map only: a bare pool or a
+  connection raises.
+
   Useful when you have plan to apply massive or not surgical
   operations on file, because it removes the overhead of lazy fetching
-  and decoding."
+  and decoding.
+
+  Options:
+  - `:realize?` returns plain data instead of fragment pointers; it
+    requires `:load-data?` and `:decode?`.
+  - `:decode?` decodes the stored blob (default true).
+  - `:load-data?` reads the data columns (default true). A row-only read
+    (`false`) is the only mode that accepts `:lock-for-share?`.
+  - `:migrate?` applies the pending migrations on read (default true).
+  - `:load-migrations?` resolves the applied migrations on a row read
+    (default true).
+  - `:lock-for-update?`, `:skip-locked?`, `:include-deleted?`,
+    `:throw-if-not-exists?` and `:read-only?` are the usual read knobs.
+  - `:persist-after-migration?` is internal: `get-file*` turns it off
+    for the in-memory migration of a read-only context. Do not pass it."
   [cfg file-id & {:as opts}]
   (assert (map? cfg) "expected cfg map, not a pool or a connection")
   (db/tx-run! cfg get-file* file-id opts))
@@ -778,7 +801,12 @@
   (let [library-ids (get-libraries cfg [file-id])
         data        (reduce (fn [data library-id]
                               (if-let [library (get-file cfg library-id :include-deleted? true)]
-                                (cond-> (ctf/absorb-assets data (:data library))
+                                ;; The library is read without `:realize?`, so its
+                                ;; `:components` may be a pointer map. Bind the
+                                ;; library's own loader: the absorb walks the
+                                ;; components and would raise without one.
+                                (cond-> (fdata/with-pointers cfg library-id
+                                          (ctf/absorb-assets data (:data library)))
                                   (= library-id (cfo/get-tokens-source data))
                                   (cfo/absorb-tokens-lib (:data library)))
                                 data))

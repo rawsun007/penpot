@@ -220,6 +220,18 @@
       (read! {:realize? true})
       (t/is (= 2 @calls)))))
 
+(t/deftest row-only-read-resolves-the-applied-migrations-on-demand
+  ;; A row-only read resolves the applied migrations by default, because the
+  ;; row can be completed later and the caller may need them; the explicit
+  ;; opt-out leaves them out.
+  (let [{:keys [file-id]} (create-file!)
+        with-migrations    (bfc/get-file th/*system* file-id :load-data? false)
+        without            (bfc/get-file th/*system* file-id
+                                         :load-data? false
+                                         :load-migrations? false)]
+    (t/is (seq (:migrations with-migrations)))
+    (t/is (nil? (:migrations without)))))
+
 (t/deftest read-probes-the-row-and-completes-with-its-data
   ;; The probe reads the row without data, and a read that needs no migration
   ;; is completed with a second query. Completing the probe map instead
