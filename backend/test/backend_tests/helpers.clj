@@ -842,6 +842,19 @@
   [& params]
   (apply db/get* *pool* params))
 
+(defn read-recording-sql
+  "Run `f` and return [result sqls], where `sqls` are the SQL statements of
+  every `db/get-with-sql` call. Those are exactly the file reads of
+  `binfile.common/get-file`: the fragment loads go through `db/get*`."
+  [f]
+  (let [sqls (atom [])]
+    (with-redefs [db/get-with-sql
+                  (let [orig db/get-with-sql]
+                    (fn [ds sql & opts]
+                      (swap! sqls conj (first sql))
+                      (apply orig ds sql opts)))]
+      [(f) @sqls])))
+
 (defn sleep
   [ms-or-duration]
   (Thread/sleep (inst-ms (ct/duration ms-or-duration))))

@@ -3086,14 +3086,30 @@
   ;; Locking is legal without loading the data: the row-only query selects
   ;; directly from `file`, so `FOR UPDATE`/`FOR SHARE` apply to the row and
   ;; the lock lives until the enclosing transaction ends. `SKIP LOCKED` only
-  ;; modifies a locking read, so on its own it is ignored.
+  ;; modifies a locking read, so on its own it is ignored. The SQL is pinned
+  ;; because a plain `SELECT` also returns the row: the lock clause is what
+  ;; serializes with the other writers.
   (let [profile (th/create-profile* 1)
         file    (th/create-file* 1 {:profile-id (:id profile)
                                     :project-id (:default-project-id profile)})]
-    (doseq [opt [:lock-for-share? :lock-for-update? :skip-locked?]]
-      (let [row (bfc/get-file th/*system* (:id file) :load-data? false opt true)]
+    (doseq [[opt sql] {:lock-for-share?  (str bfc/sql:get-file-without-data " FOR SHARE of f")
+                       :lock-for-update? (str bfc/sql:get-file-without-data " FOR UPDATE of f")
+                       :skip-locked?     bfc/sql:get-file-without-data}]
+      (let [[row sqls] (th/read-recording-sql
+                        #(bfc/get-file th/*system* (:id file) :load-data? false opt true))]
         (t/is (= (:id file) (:id row)))
-        (t/is (nil? (:data row)))))))
+        (t/is (nil? (:data row)))
+        (t/is (= [sql] sqls))))))
+
+(t/deftest get-file-rejects-realize-without-data
+  ;; `:realize?` walks the decoded data; asking for it without loading or
+  ;; decoding the data is a caller bug. The guard fires before any query, so
+  ;; no file row is needed.
+  (let [id (uuid/random)]
+    (t/is (thrown? IllegalArgumentException
+                   (bfc/get-file th/*system* id :realize? true :decode? false)))
+    (t/is (thrown? IllegalArgumentException
+                   (bfc/get-file th/*system* id :realize? true :load-data? false)))))
 
 ;; --- Library relations security tests
 

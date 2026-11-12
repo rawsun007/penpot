@@ -324,16 +324,13 @@
 
 
 (defn- attach-file-data
-  "Resolve the data of an already read row, decode it when `decode?` and
-  realize it when `realize?`. It completes the map it receives instead of
-  reading the row again."
-  [cfg file {:keys [decode? realize?]}]
-  (let [file (fdata/resolve-file-data cfg file)
-        file (if decode?
-               (fdata/decode-file-data cfg file)
-               file)]
-    (if (and realize? decode?)
-      (fdata/realize cfg file)
+  "Resolve the data of an already read row and decode it when `decode?`. It
+  completes the map it receives instead of reading the row again. It does not
+  realize: `get-file*` owns that step, once per path."
+  [cfg file {:keys [decode?]}]
+  (let [file (fdata/resolve-file-data cfg file)]
+    (if decode?
+      (fdata/decode-file-data cfg file)
       file)))
 
 (defn- fetch-file
@@ -389,7 +386,10 @@
           ;; The probe carries no data; the read is completed by re-reading
           ;; the row. `attach-file-data` would complete the probe map, which
           ;; has no data columns.
-          (fetch-file cfg id options)))
+          (when-let [file (fetch-file cfg id options)]
+            (cond-> file
+              realize?
+              (->> (fdata/realize cfg))))))
 
       :else
       (when-let [file (fetch-file cfg id options)]

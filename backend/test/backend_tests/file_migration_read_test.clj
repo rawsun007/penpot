@@ -192,25 +192,40 @@
 
       (t/is (= 1 @reads)))))
 
-(defn- read-recording-sql
-  "Run `f` and return [result sqls], where `sqls` are the SQL statements of
-  every `db/get-with-sql` call. Those are exactly the file reads of
-  `get-file`: the fragment loads go through `db/get*`."
-  [f]
-  (let [sqls (atom [])]
-    (with-redefs [db/get-with-sql
-                  (let [orig db/get-with-sql]
-                    (fn [ds sql & opts]
-                      (swap! sqls conj (first sql))
-                      (apply orig ds sql opts)))]
-      [(f) @sqls])))
+(t/deftest realize-runs-once-per-read-path
+  ;; `fdata/realize` is a full walk of the decoded data. The read owns it once
+  ;; per path; the migration path pays it twice on purpose, once inside
+  ;; `migrate-file` (the chain needs plain data) and once on its result.
+  (let [{:keys [file-id]} (create-file!)
+        calls (atom 0)
+        read! (fn [opts]
+                (reset! calls 0)
+                (with-redefs [fdata/realize
+                              (let [orig fdata/realize]
+                                (fn [cfg file]
+                                  (swap! calls inc)
+                                  (orig cfg file)))]
+                  (db/tx-run! th/*system*
+                              (fn [cfg] (bfc/get-file cfg file-id opts)))))]
+    (t/testing "a plain read realizes once"
+      (read! {:realize? true})
+      (t/is (= 1 @calls)))
+
+    (t/testing "a read-only read realizes once"
+      (read! {:realize? true :read-only? true})
+      (t/is (= 1 @calls)))
+
+    (t/testing "the migration path realizes twice"
+      (force-migration! file-id)
+      (read! {:realize? true})
+      (t/is (= 2 @calls)))))
 
 (t/deftest read-probes-the-row-and-completes-with-its-data
   ;; The probe reads the row without data, and a read that needs no migration
   ;; is completed with a second query. Completing the probe map instead
   ;; returns the file without data: it has no `:backend` nor `:data`.
   (let [{:keys [file-id page-id]} (create-file!)
-        [file sqls] (read-recording-sql
+        [file sqls] (th/read-recording-sql
                      #(db/tx-run! th/*system*
                                   (fn [cfg] (bfc/get-file cfg file-id))))]
     (t/is (= [bfc/sql:get-file-without-data bfc/sql:get-file] sqls))
@@ -221,7 +236,7 @@
   ;; takes the `file` row lock.
   (let [{:keys [file-id]} (create-file!)]
     (force-migration! file-id)
-    (let [[_ sqls] (read-recording-sql
+    (let [[_ sqls] (th/read-recording-sql
                     #(db/tx-run! th/*system*
                                  (fn [cfg] (bfc/get-file cfg file-id))))]
       (t/is (= [bfc/sql:get-file-without-data
