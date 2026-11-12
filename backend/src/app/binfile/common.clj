@@ -376,7 +376,7 @@
       (fetch-row cfg id options)
 
       (and migrate? decode? (not read-only?))
-      (when-let [file (fetch-row cfg id options)]
+      (when-let [file (fetch-row cfg id (assoc options :load-data? false))]
         (if (fmg/need-migration? file)
           (when-let [file (fetch-file cfg id (assoc options :lock-for-update? true))]
             (cond-> file
@@ -386,7 +386,10 @@
               realize?
               (->> (fdata/realize cfg))))
 
-          (attach-file-data cfg file options)))
+          ;; The probe carries no data; the read is completed by re-reading
+          ;; the row. `attach-file-data` would complete the probe map, which
+          ;; has no data columns.
+          (fetch-file cfg id options)))
 
       :else
       (when-let [file (fetch-file cfg id options)]

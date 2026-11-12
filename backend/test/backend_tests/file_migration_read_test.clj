@@ -192,6 +192,42 @@
 
       (t/is (= 1 @reads)))))
 
+(defn- read-recording-sql
+  "Run `f` and return [result sqls], where `sqls` are the SQL statements of
+  every `db/get-with-sql` call. Those are exactly the file reads of
+  `get-file`: the fragment loads go through `db/get*`."
+  [f]
+  (let [sqls (atom [])]
+    (with-redefs [db/get-with-sql
+                  (let [orig db/get-with-sql]
+                    (fn [ds sql & opts]
+                      (swap! sqls conj (first sql))
+                      (apply orig ds sql opts)))]
+      [(f) @sqls])))
+
+(t/deftest read-probes-the-row-and-completes-with-its-data
+  ;; The probe reads the row without data, and a read that needs no migration
+  ;; is completed with a second query. Completing the probe map instead
+  ;; returns the file without data: it has no `:backend` nor `:data`.
+  (let [{:keys [file-id page-id]} (create-file!)
+        [file sqls] (read-recording-sql
+                     #(db/tx-run! th/*system*
+                                  (fn [cfg] (bfc/get-file cfg file-id))))]
+    (t/is (= [bfc/sql:get-file-without-data bfc/sql:get-file] sqls))
+    (t/is (some? (get-in file [:data :pages-index page-id])))))
+
+(t/deftest migration-read-probes-the-row-and-locks-the-complete-read
+  ;; The same probe decides the migration path; the full read is the one that
+  ;; takes the `file` row lock.
+  (let [{:keys [file-id]} (create-file!)]
+    (force-migration! file-id)
+    (let [[_ sqls] (read-recording-sql
+                    #(db/tx-run! th/*system*
+                                 (fn [cfg] (bfc/get-file cfg file-id))))]
+      (t/is (= [bfc/sql:get-file-without-data
+                (str bfc/sql:get-file " FOR UPDATE of f")]
+               sqls)))))
+
 (t/deftest read-only-migration-never-writes
   ;; A read-only context migrates in memory: no lock, no row write and no
   ;; storage write. The pending migration stays pending.
